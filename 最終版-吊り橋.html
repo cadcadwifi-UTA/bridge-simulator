@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>吊り橋 3D構造力学シミュレーター　</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;700;800;900&display=swap');
+        body { font-family: 'M PLUS Rounded 1c', sans-serif; background-color: #0f172a; color: #f8fafc; user-select: none; overflow-x: hidden; }
+        .canvas-container { position: relative; width: 100%; height: 500px; overflow: hidden; border-radius: 1rem; }
+        #webglCanvas { width: 100%; height: 100%; display: block; }
+        #collapse-alert { display: none; opacity: 0; transition: opacity 0.5s ease-in-out; }
+        .show-alert #collapse-alert { display: flex; opacity: 1; }
+        @keyframes pulse-border { 0%, 100% { border-color: rgba(225, 29, 72, 0.9); box-shadow: inset 0 0 50px rgba(225, 29, 72, 0.5); } 50% { border-color: rgba(159, 18, 57, 0.9); box-shadow: inset 0 0 20px rgba(159, 18, 57, 0.3); } }
+        .show-alert .canvas-container { animation: pulse-border 1s infinite; border: 4px solid transparent; }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col">
+    <header class="bg-slate-800/90 border-b border-slate-700 px-4 py-3 sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto flex items-center justify-between gap-3">
+            <div class="flex items-center gap-3">
+                <div class="bg-blue-600/30 p-2 rounded-xl text-blue-400 border border-blue-500/30"><i data-lucide="box" class="w-7 h-7"></i></div>
+                <div>
+                    <h1 class="text-base sm:text-lg font-black text-white">吊り橋 3D構造力学シミュレーター</h1>
+                    <p class="text-xs text-slate-400 font-bold">〜橋にかかる力と反力を可視化〜</p>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="flex-1 p-3 sm:p-5 flex flex-col gap-4 max-w-7xl mx-auto w-full">
+        <!-- 力のモニター & 3D Canvas -->
+        <div class="bg-slate-800/80 p-3 rounded-2xl border border-slate-700 flex flex-col gap-3 relative">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-2 bg-slate-900/90 p-3 rounded-xl border border-slate-700/80 items-center text-center relative z-10">
+                <div class="flex flex-col items-center justify-center">
+                    <span class="text-xs font-bold text-slate-400 mb-1">総作用（下向き）</span>
+                    <div class="flex items-baseline gap-1"><span id="stat-total-down" class="text-xl font-black text-rose-400">0.0</span><span class="text-sm font-bold text-rose-400">kN</span></div>
+                    <span class="text-[10px] text-slate-500">活荷重 + 自重(120,000kN)</span>
+                </div>
+                <div class="flex items-center justify-center gap-2 font-black text-slate-400">
+                    <span id="eq-mark" class="text-emerald-400">＝</span>
+                    <span id="eq-label" class="bg-emerald-500/20 text-emerald-300 text-xs px-2 py-1 rounded-md">つり合い成立</span>
+                </div>
+                <div class="flex flex-col items-center justify-center">
+                    <span class="text-xs font-bold text-slate-400 mb-1">総反作用（上向き）</span>
+                    <div class="flex items-baseline gap-1"><span id="stat-total-up" class="text-xl font-black text-emerald-400">0.0</span><span class="text-sm font-bold text-emerald-400">kN</span></div>
+                    <span class="text-[10px] text-slate-500">主塔・アンカーの支持力合力</span>
+                </div>
+            </div>
+            
+            <div class="canvas-container bg-slate-950 relative">
+                <canvas id="webglCanvas"></canvas>
+                <div id="labels-overlay" class="absolute inset-0 pointer-events-none"></div>
+                <div id="collapse-alert" class="absolute inset-0 flex-col items-center justify-center z-20 bg-slate-900/40 backdrop-blur-sm pointer-events-none">
+                    <div class="bg-slate-900/80 p-6 rounded-2xl border-2 border-rose-500 text-center shadow-[0_0_30px_rgba(225,29,72,0.5)]">
+                        <i data-lucide="alert-triangle" class="w-16 h-16 text-rose-500 mx-auto mb-2 animate-pulse"></i>
+                        <h2 class="text-3xl font-black text-white tracking-widest drop-shadow-lg">構造崩壊</h2>
+                        <p class="text-rose-200 font-bold mt-2">限界耐久値を超過</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <!-- コントロール & 数値表示 -->
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-4">
+            <div class="lg:col-span-4 bg-slate-800/80 p-4 rounded-2xl border border-slate-700 flex flex-col justify-between">
+                <h2 class="text-sm font-bold text-slate-300 border-b border-slate-700 pb-2 mb-3">車両の投入 (連打可)</h2>
+                <div class="grid grid-cols-2 gap-2">
+                    <button class="btn-spawn bg-emerald-900/40 hover:bg-emerald-800/60 transition border border-emerald-500/40 text-emerald-200 p-2 rounded-xl text-xs font-bold shadow" data-type="car">乗用車 (15kN)</button>
+                    <button class="btn-spawn bg-blue-900/40 hover:bg-blue-800/60 transition border border-blue-500/40 text-blue-200 p-2 rounded-xl text-xs font-bold shadow" data-type="bus">大型バス (120kN)</button>
+                    <button class="btn-spawn bg-amber-900/40 hover:bg-amber-800/60 transition border border-amber-500/40 text-amber-200 p-2 rounded-xl text-xs font-bold shadow" data-type="truck">トラック (250kN)</button>
+                    <button class="btn-spawn bg-rose-900/40 hover:bg-rose-800/60 transition border border-rose-500/40 text-rose-200 p-2 rounded-xl text-xs font-bold shadow" data-type="trailer">トレーラー (350kN)</button>
+                </div>
+                <div class="flex gap-2 mt-3">
+                    <button id="btn-play" class="flex-1 bg-blue-600 hover:bg-blue-500 text-white py-2 rounded-xl text-xs font-bold transition">再生</button>
+                    <button id="btn-pause" class="flex-1 bg-slate-700 hover:bg-slate-600 text-slate-200 py-2 rounded-xl text-xs font-bold transition">停止</button>
+                    <button id="btn-reset" class="bg-slate-800 hover:bg-slate-700 text-white px-3 py-2 rounded-xl text-xs font-bold transition">全消去・修復</button>
+                </div>
+                <div class="mt-3 flex items-center gap-2 bg-slate-900/50 p-2 rounded-xl">
+                    <label class="text-xs font-bold text-slate-400">速度</label>
+                    <input type="range" id="speed-slider" min="10" max="150" value="60" class="flex-1 accent-blue-500">
+                    <span id="speed-display" class="text-xs font-mono text-slate-300 w-12 text-right">60km</span>
+                </div>
+            </div>
+
+            <div class="lg:col-span-4 bg-slate-800/80 p-4 rounded-2xl border border-slate-700 flex flex-col">
+                <h2 class="text-sm font-bold text-slate-300 border-b border-slate-700 pb-2 mb-2">各支点の反力 (自重含む)</h2>
+                <div class="grid grid-cols-2 gap-2 my-auto">
+                    <div class="bg-slate-900/80 p-2 rounded-xl border border-slate-700 flex flex-col"><span class="text-[11px] text-slate-400">Aアンカー(Ra)</span><span id="val-ra" class="text-sm font-black text-emerald-400 font-mono mt-1">0.0 kN</span></div>
+                    <div class="bg-slate-900/80 p-2 rounded-xl border border-slate-700 flex flex-col"><span class="text-[11px] text-slate-400">C主塔(RC)</span><span id="val-rt1" class="text-sm font-black text-emerald-400 font-mono mt-1">0.0 kN</span></div>
+                    <div class="bg-slate-900/80 p-2 rounded-xl border border-slate-700 flex flex-col"><span class="text-[11px] text-slate-400">D主塔(RD)</span><span id="val-rt2" class="text-sm font-black text-emerald-400 font-mono mt-1">0.0 kN</span></div>
+                    <div class="bg-slate-900/80 p-2 rounded-xl border border-slate-700 flex flex-col"><span class="text-[11px] text-slate-400">Bアンカー(Rb)</span><span id="val-rb" class="text-sm font-black text-emerald-400 font-mono mt-1">0.0 kN</span></div>
+                </div>
+            </div>
+
+            <div class="lg:col-span-4 bg-slate-800/80 p-4 rounded-2xl border border-slate-700 flex flex-col">
+                <h2 class="text-sm font-bold text-slate-300 border-b border-slate-700 pb-2 mb-2">補剛桁にかかる力 (最大)</h2>
+                <div class="space-y-2 my-auto">
+                    <div class="bg-slate-900/80 p-2.5 rounded-xl border border-slate-700 flex justify-between items-center relative overflow-hidden">
+                        <div class="absolute left-0 top-0 bottom-0 bg-amber-500/10 w-full transform -translate-x-full transition-transform duration-300" id="moment-bar"></div>
+                        <div class="relative z-10"><div class="text-xs font-bold text-amber-300">最大曲げモーメント</div><div class="text-[10px] text-slate-500">限界: 400,000 kN·m</div></div>
+                        <div class="text-right relative z-10"><div id="val-mmax" class="text-sm font-black text-amber-400 font-mono">0.0 kN·m</div><div id="loc-mmax" class="text-[10px] text-slate-400">--- m</div></div>
+                    </div>
+                    <div class="bg-slate-900/80 p-2.5 rounded-xl border border-slate-700 flex justify-between items-center">
+                        <div><div class="text-xs font-bold text-rose-300">最大せん断力</div></div>
+                        <div class="text-right"><div id="val-vmax" class="text-sm font-black text-rose-400 font-mono">0.0 kN</div><div id="loc-vmax" class="text-[10px] text-slate-400">--- m</div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-slate-800/80 p-4 rounded-2xl border border-slate-700 mt-4 mb-10">
+            <h2 class="text-sm font-bold text-slate-300 border-b border-slate-700 pb-2 mb-3">構造力学グラフ (全幅800m)</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div class="h-[200px] bg-slate-900/80 p-2 rounded-xl"><div class="text-xs font-bold text-amber-400">曲げモーメント図 (BMD)</div><div class="h-full relative"><canvas id="bmdChart"></canvas></div></div>
+                <div class="h-[200px] bg-slate-900/80 p-2 rounded-xl"><div class="text-xs font-bold text-rose-400">せん断力図 (SFD)</div><div class="h-full relative"><canvas id="sfdChart"></canvas></div></div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        lucide.createIcons();
+
+        const BRIDGE = { length: 800, segments: 160 };
+        const LIMIT_MOMENT = 400000;
+        const BRIDGE_DEAD_WEIGHT = 120000;
+        const CABLE_SHARE = 0.90;
+
+        const VEHICLE_TYPES = {
+            car:     { weight: 15,  color: 0x10b981, label: "乗用車" },
+            bus:     { weight: 120, color: 0x3b82f6, label: "バス" },
+            truck:   { weight: 250, color: 0xf59e0b, label: "トラック" },
+            trailer: { weight: 350, color: 0xf43f5e, label: "トレーラー" }
+        };
+
+        let state = {
+            isRunning: true, speedKmH: 60, vehicles: [], collapsed: false, physicsInitialized: false, breakIndex: 0,
+            ra: 0, rt1: 0, rt2: 0, rb: 0,
+            bmd: new Array(BRIDGE.segments + 1).fill(0), sfd: new Array(BRIDGE.segments + 1).fill(0),
+            mMax: 0, mMaxLoc: 0, vMax: 0, vMaxLoc: 0
+        };
+      let vehicleIdCounter = 0;
+        let lastTimestamp = performance.now();
+        const xNodes = Array.from({ length: BRIDGE.segments + 1 }, (_, i) => (i * BRIDGE.length) / BRIDGE.segments);
+
+        // Three.js Setup
+        const container = document.querySelector('.canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x090d16);
+        scene.fog = new THREE.FogExp2(0x090d16, 0.0007);
+        const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 1, 3000);
+        camera.position.set(0, 180, 800);
+        const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('webglCanvas'), antialias: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.target.set(0, 40, 0);
+        controls.enableDamping = true;
+        controls.maxPolarAngle = Math.PI / 2 + 0.1;
+        
+        scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(150, 300, 200);
+        scene.add(dirLight);
+        
+        const sea = new THREE.Mesh(new THREE.PlaneGeometry(3000, 3000), new THREE.MeshStandardMaterial({ color: 0x0284c7, transparent: true, opacity: 0.7 }));
+        sea.rotation.x = -Math.PI / 2; sea.position.y = -10;
+        scene.add(sea);
+
+        function createThickArrow(colorHex) {
+            const group = new THREE.Group();
+            const mat = new THREE.MeshStandardMaterial({ color: colorHex, roughness: 0.3 });
+            const shaft = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.5, 1), mat);
+            shaft.geometry.translate(0, -0.5, 0);
+            const head = new THREE.Mesh(new THREE.ConeGeometry(5, 12), mat);
+            head.geometry.translate(0, -6, 0);
+            group.add(shaft); group.add(head);
+            return { group, shaft, head };
+        }
+
+        const bridgeGroup = new THREE.Group(); scene.add(bridgeGroup);
+        const deckSegments = [];
+        for(let i=0; i<BRIDGE.segments; i++){
+            const mat = new THREE.MeshStandardMaterial({ color: 0x475569, emissive: 0x000000 });
+            const mesh = new THREE.Mesh(new THREE.BoxGeometry(5, 4, 28), mat);
+            mesh.position.set(-400 + i*5 + 2.5, 20, 0);
+            mesh.userData = { isDeck: true, origY: 20, origX: -400 + i*5 + 2.5, index: i };
+            bridgeGroup.add(mesh);
+            deckSegments.push(mesh);
+        }
+        
+        [-200, 200].forEach(x => {
+            const tower = new THREE.Mesh(new THREE.BoxGeometry(16, 150, 24), new THREE.MeshStandardMaterial({ color: 0xe2e8f0 }));
+            tower.position.set(x, 75, 0); bridgeGroup.add(tower);
+        });
+        [-400, 400].forEach(x => {
+            const anchor = new THREE.Mesh(new THREE.BoxGeometry(30, 40, 30), new THREE.MeshStandardMaterial({ color: 0x334155 }));
+            anchor.position.set(x, 20, 0); bridgeGroup.add(anchor);
+        });
+
+        const cablesGroup = new THREE.Group(); bridgeGroup.add(cablesGroup);
+        function addCableSpan(xStart, yStart, xEnd, yEnd, sag) {
+            const midX = (xStart + xEnd)/2;
+            const curve = new THREE.QuadraticBezierCurve3(
+                new THREE.Vector3(xStart, yStart, 0),
+                new THREE.Vector3(midX, Math.min(yStart, yEnd) - sag, 0),
+                new THREE.Vector3(xEnd, yEnd, 0)
+            );
+            const cableMat = new THREE.MeshStandardMaterial({color: 0x94a3b8, roughness: 0.4});
+            const tube = new THREE.Mesh(new THREE.TubeGeometry(curve, 20, 1.5, 8, false), cableMat);
+            cablesGroup.add(tube);
+            for(let i=1; i<=8; i++) {
+                const t = i/9; const pt = curve.getPoint(t);
+                if(pt.y > 20) {
+                    const hGeo = new THREE.CylinderGeometry(0.4, 0.4, pt.y - 20);
+                    hGeo.translate(0, (pt.y-20)/2, 0);
+                    const hanger = new THREE.Mesh(hGeo, cableMat);
+                    hanger.position.set(pt.x, 20, pt.z);
+                    cablesGroup.add(hanger);
+                }
+            }
+          }
+      addCableSpan(-400, 20, -200, 150, 40);
+        addCableSpan(-200, 150, 200, 150, 120);
+        addCableSpan(200, 150, 400, 20, 40);
+
+        const reactionArrows = {};
+        [-400, -200, 200, 400].forEach((x, i) => {
+            const key = ['ra','rt1','rt2','rb'][i];
+            const arrowObj = createThickArrow(0x10b981);
+            arrowObj.group.position.set(x, 20, 22);
+            reactionArrows[key] = arrowObj;
+            scene.add(arrowObj.group);
+        });
+
+        const vehicle3DGroup = new THREE.Group(); scene.add(vehicle3DGroup);
+
+        const chartOptions = { responsive: true, maintainAspectRatio: false, animation: false, elements: { point: { radius: 0 } }, plugins: { legend: { display: false } } };
+        const chartBMD = new Chart(document.getElementById('bmdChart'), { type: 'line', data: { labels: xNodes.map(x=>`${Math.round(x)}m`), datasets: [{ data: state.bmd, borderColor: '#f59e0b', backgroundColor: 'rgba(245, 158, 11, 0.3)', fill: true }] }, options: { ...chartOptions, scales: { y: { reverse: true } } } });
+        const chartSFD = new Chart(document.getElementById('sfdChart'), { type: 'line', data: { labels: xNodes.map(x=>`${Math.round(x)}m`), datasets: [{ data: state.sfd, borderColor: '#f43f5e', backgroundColor: 'rgba(244, 63, 94, 0.3)', fill: true, stepped: true }] }, options: chartOptions });
+
+        function updateLabel(id, text, worldPos, colorClass, isArrow = false, lineLength = 24) {
+            let el = document.getElementById(`lbl-${id}`);
+            if(!el) {
+                el = document.createElement('div');
+                el.id = `lbl-${id}`;
+                el.className = `absolute px-2 py-1 text-[11px] font-bold rounded-lg shadow-lg border border-slate-700/50 transform -translate-x-1/2 -translate-y-1/2 transition-opacity z-10 whitespace-nowrap ${colorClass}`;
+                el.appendChild(document.createElement('span'));
+                if(isArrow) {
+                    const line = document.createElement('div');
+                    line.className = `absolute w-px bg-slate-400 left-1/2 transform -translate-x-1/2`;
+                    line.style.height = `${lineLength}px`;
+                    line.style.bottom = `-${lineLength}px`;
+                    el.appendChild(line);
+                }
+                document.getElementById('labels-overlay').appendChild(el);
+            }
+            el.firstChild.textContent = text;
+            const pos = worldPos.clone().project(camera);
+            if(pos.z > 1) { el.style.opacity = 0; return; }
+            el.style.opacity = state.collapsed ? 0 : 1;
+            el.style.left = `${(pos.x * .5 + .5) * container.clientWidth}px`;
+            el.style.top = `${(-pos.y * .5 + .5) * container.clientHeight - (isArrow ? lineLength + 6 : 0)}px`;
+        }
+
+        document.querySelectorAll('.btn-spawn').forEach(btn => {
+            btn.addEventListener('click', function() {
+                if(state.collapsed) return;
+                state.vehicles.push({ id: vehicleIdCounter++, type: this.getAttribute('data-type'), x: -30 });
+                state.isRunning = true;
+            });
+        });
+        document.getElementById('btn-play').addEventListener('click', () => { if(!state.collapsed) state.isRunning = true; });
+        document.getElementById('btn-pause').addEventListener('click', () => state.isRunning = false);
+        document.getElementById('btn-reset').addEventListener('click', resetSimulation);
+        document.getElementById('speed-slider').addEventListener('input', (e) => {
+            state.speedKmH = parseInt(e.target.value);
+            document.getElementById('speed-display').textContent = state.speedKmH + 'km';
+        });
+
+        function resetSimulation() {
+            state.vehicles = []; state.isRunning = true; state.collapsed = false; state.physicsInitialized = false;
+            document.body.classList.remove('show-alert');
+            document.getElementById('labels-overlay').innerHTML = '';
+            deckSegments.forEach((mesh) => {
+                mesh.position.set(mesh.userData.origX, mesh.userData.origY, 0);
+                mesh.rotation.set(0,0,0);
+                mesh.material.color.setHex(0x475569);
+                mesh.material.emissive.setHex(0x000000);
+            });
+            cablesGroup.visible = true;
+            document.getElementById('moment-bar').style.transform = `translate(-100%)`;
+            document.getElementById('moment-bar').classList.replace('bg-rose-500/50', 'bg-amber-500/10');
+            document.getElementById('eq-mark').textContent = '＝';
+            document.getElementById('eq-label').textContent = 'つり合い成立';
+            document.getElementById('eq-label').className = 'bg-emerald-500/20 text-emerald-300 text-xs px-2 py-1 rounded-md';
+                     }
+      function gameLoop(timestamp) {
+            const dt = Math.min((timestamp - lastTimestamp) / 1000, 0.1);
+            lastTimestamp = timestamp;
+            controls.update();
+
+            if (state.collapsed) {
+                if (!state.physicsInitialized) {
+                    deckSegments.forEach((mesh, i) => {
+                        const distFromBreak = i - state.breakIndex;
+                        mesh.userData.vy = (Math.random() * -10);
+                        mesh.userData.vx = distFromBreak * 1.5;
+                        mesh.userData.vr = (Math.random() - 0.5) * 0.5;
+                    });
+                    vehicle3DGroup.children.forEach(mesh => {
+                        mesh.userData.vy = 0;
+                    });
+                    cablesGroup.visible = false;
+                    state.physicsInitialized = true;
+                    setTimeout(() => { document.body.classList.add('show-alert'); }, 3000);
+                }
+
+                deckSegments.forEach((mesh) => {
+                    if (mesh.position.y > -20) {
+                        mesh.userData.vy -= 9.8 * dt * 10;
+                        mesh.position.y += mesh.userData.vy * dt;
+                        mesh.position.x += mesh.userData.vx * dt;
+                        mesh.rotation.z += mesh.userData.vr * dt;
+                        mesh.rotation.x += mesh.userData.vr * dt;
+                    }
+                });
+                vehicle3DGroup.children.forEach(mesh => {
+                    if (mesh.position.y > -20) {
+                        mesh.userData.vy -= 9.8 * dt * 10;
+                        mesh.position.y += mesh.userData.vy * dt;
+                        mesh.rotation.z += 0.5 * dt;
+                        mesh.rotation.x += 0.2 * dt;
+                    }
+                });
+
+                renderer.render(scene, camera);
+                requestAnimationFrame(gameLoop);
+                return;
+            }
+
+            if (state.isRunning) {
+                state.vehicles.forEach(v => v.x += ((state.speedKmH * 1000)/3600) * dt * 2.5);
+                state.vehicles = state.vehicles.filter(v => v.x < BRIDGE.length + 40);
+            }
+
+            let rhs1=0, rhs2=0, V10_0=0, V20_0=0, V30_0=0, sumP1=0, sumP2=0, sumP3=0, liveLoad=0;
+            const activeVehicles = state.vehicles.filter(v => v.x >= 0 && v.x <= BRIDGE.length);
+            
+            activeVehicles.forEach(v => {
+                const P = VEHICLE_TYPES[v.type].weight, x = v.x;
+                liveLoad += P;
+                if (x < 200) { rhs1 += (P*x*(200-x)*(400-x))/200; V10_0 += P*(200-x)/200; sumP1 += P; }
+                else if (x < 600) { const a = x-200, b = 600-x; rhs1 += (P*a*b*(400+a))/400; rhs2 += (P*a*b*(400+b))/400; V20_0 += P*(600-x)/400; sumP2 += P; }
+                else { rhs2 += (P*(x-600)*(800-x)*(x-400))/200; V30_0 += P*(800-x)/200; sumP3 += P; }
+            });
+const M1 = (-3*rhs1 + rhs2)/3200, M2 = (rhs1 - 3*rhs2)/3200;
+            let ra_live = V10_0 + M1/200; 
+            let rt1_live = -(ra_live - sumP1) + (V20_0 + (M2 - M1)/400);
+            let rt2_live = -((V20_0 + (M2 - M1)/400) - sumP2) + (V30_0 - M2/200); 
+            let rb_live = -((V30_0 - M2/200) - sumP3);
+
+            const q_up = (liveLoad * CABLE_SHARE) / BRIDGE.length;
+            const ra_dead = BRIDGE_DEAD_WEIGHT * (200 / 800) / 2;
+            const rt1_dead = BRIDGE_DEAD_WEIGHT * (400 / 800) / 2 + ra_dead;
+            
+            state.ra = ra_live + ra_dead; state.rt1 = rt1_live + rt1_dead;
+            state.rt2 = rt2_live + rt1_dead; state.rb = rb_live + ra_dead;
+
+            state.mMax = 0; state.vMax = 0;
+            
+            for (let i = 0; i <= BRIDGE.segments; i++) {
+                const x = xNodes[i]; let m = 0, v = 0;
+                
+                if (x <= 200) {
+                    v = ra_live; m = ra_live * x;
+                    activeVehicles.filter(veh => veh.x <= x).forEach(veh => { const P = VEHICLE_TYPES[veh.type].weight; v -= P; m -= P*(x - veh.x); });
+                } else if (x <= 600) {
+                    v = ra_live + rt1_live - sumP1; m = ra_live*x + rt1_live*(x-200);
+                    activeVehicles.filter(veh => veh.x <= x).forEach(veh => { const P = VEHICLE_TYPES[veh.type].weight; v -= P; m -= P*(x - veh.x); });
+                } else {
+                    v = ra_live + rt1_live + rt2_live - sumP1 - sumP2; m = ra_live*x + rt1_live*(x-200) + rt2_live*(x-600);
+                    activeVehicles.filter(veh => veh.x <= x).forEach(veh => { const P = VEHICLE_TYPES[veh.type].weight; v -= P; m -= P*(x - veh.x); });
+                }
+
+                let vc = 0, mc = 0;
+                if (x <= 200) { vc = q_up * (43.75 - x); mc = q_up * (43.75 * x - (x*x)/2); } 
+                else if (x <= 600) { vc = q_up * (400 - x); mc = q_up * (-11250 + 200*(x-200) - ((x-200)*(x-200))/2); } 
+                else { const x_rev = 800 - x; vc = -q_up * (43.75 - x_rev); mc = q_up * (43.75 * x_rev - (x_rev*x_rev)/2); }
+
+                v = v - vc; m = m - mc;
+                state.bmd[i] = m; state.sfd[i] = v;
+                
+                if (Math.abs(m) > Math.abs(state.mMax)) { state.mMax = m; state.mMaxLoc = x; }
+                if (Math.abs(v) > Math.abs(state.vMax)) { state.vMax = v; state.vMaxLoc = x; }
+
+                if(i < BRIDGE.segments) {
+                    const mesh = deckSegments[i];
+                    const stressRatio = Math.min(1.0, Math.abs(m) / LIMIT_MOMENT);
+                    
+                    const baseR = 0x47/255, baseG = 0x55/255, baseB = 0x69/255;
+                    const r = baseR + stressRatio * (1.0 - baseR);
+                    const g = baseG * (1.0 - stressRatio);
+                    const b = baseB * (1.0 - stressRatio);
+                    
+                    mesh.material.color.setRGB(r, g, b);
+                    const emit = Math.max(0, (stressRatio - 0.5) * 2.0);
+                    mesh.material.emissive.setRGB(emit * 0.8, 0, 0);
+                }
+                                                        }
+        if (Math.abs(state.mMax) >= LIMIT_MOMENT) {
+                state.collapsed = true; state.isRunning = false;
+                state.breakIndex = Math.floor((state.mMaxLoc / BRIDGE.length) * BRIDGE.segments);
+                
+                document.getElementById('eq-mark').textContent = '≠';
+                document.getElementById('eq-label').textContent = '限界突破・崩壊';
+                document.getElementById('eq-label').className = 'bg-rose-600 text-white font-bold text-sm px-3 py-1 rounded-md animate-pulse';
+            }
+
+            const totalDown = liveLoad + BRIDGE_DEAD_WEIGHT;
+            document.getElementById('stat-total-down').textContent = totalDown.toLocaleString(undefined, {minimumFractionDigits: 1, maximumFractionDigits: 1});
+            const totalUp = state.ra + state.rt1 + state.rt2 + state.rb;
+            document.getElementById('stat-total-up').textContent = totalUp.toLocaleString(undefined, {minimumFractionDigits: 1, maximumFractionDigits: 1});
+            
+            document.getElementById('val-ra').textContent = state.ra.toLocaleString(undefined, {maximumFractionDigits: 1}) + ' kN'; 
+            document.getElementById('val-rt1').textContent = state.rt1.toLocaleString(undefined, {maximumFractionDigits: 1}) + ' kN';
+            document.getElementById('val-rt2').textContent = state.rt2.toLocaleString(undefined, {maximumFractionDigits: 1}) + ' kN'; 
+            document.getElementById('val-rb').textContent = state.rb.toLocaleString(undefined, {maximumFractionDigits: 1}) + ' kN';
+            
+            document.getElementById('val-mmax').textContent = state.mMax.toLocaleString(undefined, {maximumFractionDigits: 1}) + ' kN·m'; 
+            document.getElementById('loc-mmax').textContent = Math.round(state.mMaxLoc) + ' m';
+            document.getElementById('val-vmax').textContent = state.vMax.toLocaleString(undefined, {maximumFractionDigits: 1}) + ' kN'; 
+            document.getElementById('loc-vmax').textContent = Math.round(state.vMaxLoc) + ' m';
+            
+            const ratio = Math.min(100, (Math.abs(state.mMax) / LIMIT_MOMENT) * 100);
+            const mBar = document.getElementById('moment-bar');
+            mBar.style.transform = `translateX(${ratio - 100}%)`;
+            if(ratio > 80) mBar.classList.replace('bg-amber-500/10', 'bg-rose-500/50');
+            else mBar.classList.replace('bg-rose-500/50', 'bg-amber-500/10');
+
+            chartBMD.update(); chartSFD.update();
+        // --- 3Dタグ・矢印描画（車両荷重による伸び縮みを強調するロジックへ調整） ---
+            const deadReactions = {
+                ra: ra_dead,
+                rt1: rt1_dead,
+                rt2: rt1_dead,
+                rb: ra_dead
+            };
+            const rData = {ra:state.ra, rt1:state.rt1, rt2:state.rt2, rb:state.rb};
+            
+            Object.entries(rData).forEach(([k, val]) => {
+                const arr = reactionArrows[k];
+                if(arr) {
+                    const isVis = Math.abs(val) > 0.5;
+                    arr.group.visible = isVis;
+                    if(isVis) {
+                        // 自重分を超えた車両（活荷重）による増加分を算出
+                        const liveIncrease = Math.max(0, val - deadReactions[k]);
+                        
+                        // 基本長15 + 車両荷重による増分（感度を高めて視覚変化を強調）
+                        const len = Math.min(120, Math.max(10, 15 + (liveIncrease / 15)));
+                        
+                        arr.shaft.scale.y = len; 
+                        arr.shaft.position.y = -12;
+                        arr.group.rotation.x = val >= 0 ? 0 : Math.PI;
+                        
+                        const col = val >= 0 ? 0x10b981 : 0xf43f5e;
+                        arr.shaft.material.color.setHex(col); 
+                        arr.head.material.color.setHex(col);
+                        
+                        const labelY = val >= 0 ? 20 - len - 25 : 20 + len + 25;
+                        const labelCol = val >= 0 ? 'bg-slate-900/90 text-emerald-300' : 'bg-slate-900/90 text-rose-300';
+                        
+                        updateLabel(`r-${k}`, `${Math.round(val).toLocaleString()} kN`, new THREE.Vector3(arr.group.position.x, labelY, arr.group.position.z), labelCol, true, 24);
+                    } else {
+                        const el = document.getElementById(`lbl-r-${k}`); if(el) el.style.opacity = 0;
+                    }
+                }
+            });
+        const activeIds = state.vehicles.map(v => v.id);
+            vehicle3DGroup.children.slice().forEach(c => {
+                if(!activeIds.includes(c.userData.id)) {
+                    vehicle3DGroup.remove(c);
+                    const el = document.getElementById(`lbl-v-${c.userData.id}`); if(el) el.remove();
+                }
+            });
+
+            state.vehicles.forEach(v => {
+                let mesh = vehicle3DGroup.children.find(c => c.userData.id === v.id);
+                if(!mesh) {
+                    const group = new THREE.Group();
+                    const body = new THREE.Mesh(new THREE.BoxGeometry(16, 6, 8), new THREE.MeshStandardMaterial({ color: VEHICLE_TYPES[v.type].color }));
+                    body.position.y = 3; group.add(body);
+                    const arr = createThickArrow(0xf43f5e);
+                    arr.group.rotation.x = Math.PI; arr.group.position.set(0, 6, 0);
+                    const len = Math.min(80, Math.max(5, VEHICLE_TYPES[v.type].weight / 5));
+                    arr.shaft.scale.y = len; arr.shaft.position.y = -12;
+                    group.add(arr.group);
+                    mesh = group; mesh.userData = { id: v.id, weight: VEHICLE_TYPES[v.type].weight, label: VEHICLE_TYPES[v.type].label };
+                    vehicle3DGroup.add(mesh);
+                }
+                mesh.position.set(v.x - 400, 20, 6);
+                
+                updateLabel(`v-${v.id}`, `${mesh.userData.label} ${mesh.userData.weight}kN`, new THREE.Vector3(mesh.position.x, mesh.position.y + 40, mesh.position.z), 'bg-slate-900/90 text-slate-200', true, 45);
+            });
+
+            renderer.render(scene, camera);
+            requestAnimationFrame(gameLoop);
+        }
+        
+        requestAnimationFrame(gameLoop);
+    </script>
+</body>
+</html>
